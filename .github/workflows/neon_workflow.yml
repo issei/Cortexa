@@ -1,0 +1,99 @@
+name: Neon Branching & CI for Pull Requests
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - closed
+    branches:
+      - main
+
+# Garante que apenas um workflow por PR seja executado por vez
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Job para criar o branch do BD e executar os testes/migrações
+  test_pr_branch:
+    name: Create Neon Branch & Run CI
+    # Este job só executa quando o PR é aberto ou atualizado
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+
+    # Permissões necessárias para a action de schema-diff comentar no PR
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get branch name
+        id: branch_name
+        uses: tj-actions/branch-names@v8
+
+      - name: Create Neon Branch
+        id: create_neon_branch
+        uses: neondatabase/create-branch-action@v5
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          branch_name: preview/pr-${{ github.event.number }}-${{ steps.branch_name.outputs.current_branch }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+
+      # --- ETAPA DE MIGRAÇÃO ---
+      - name: Apply Database Migrations
+        env:
+          # A action 'create_neon_branch' expõe a string de conexão do BD temporário
+          DATABASE_URL: ${{ steps.create_neon_branch.outputs.db_url_with_pooler }}
+        run: |
+          echo "Aplicando todas as migrações na branch de preview..."
+          # Este comando aplica todos os arquivos .sql do diretório de migrações em ordem
+          for migration in $(ls -v database/migrations/*.sql); do
+            echo "Aplicando $migration..."
+            psql "$DATABASE_URL" -f "$migration"
+          done
+
+      # --- ETAPA DE TESTES UNITÁRIOS ---
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run Unit Tests
+        # Os testes unitários devem usar mocks e não precisam da URL do banco,
+        # mas executá-los aqui garante que o código está saudável.
+        run: pytest tests/
+
+      # (Opcional, mas recomendado) Posta um comentário no PR com as diferenças de schema
+      - name: Post Schema Diff Comment to PR
+        uses: neondatabase/schema-diff-action@v1
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          # Compara a branch principal com a nossa nova branch de preview
+          compare_branch: preview/pr-${{ github.event.number }}-${{ steps.branch_name.outputs.current_branch }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+
+  # Job para deletar o branch do BD quando o PR é fechado
+  delete_neon_branch:
+    name: Delete Neon Branch
+    # Este job só executa quando o PR é fechado
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get branch name
+        id: branch_name
+        uses: tj-actions/branch-names@v8
+
+      - name: Delete Neon Branch
+        uses: neondatabase/delete-branch-action@v3
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          branch_name: preview/pr-${{ github.event.number }}-${{ steps.branch_name.outputs.current_branch }}
+          api_key: ${{ secrets.NEON_API_KEY }}

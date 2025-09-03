@@ -46,3 +46,14 @@ build/
 # OS-specific files
 .DS_Store
 Thumbs.db
+
+# Arquivos de ambiente Python 
+__pycache__/ 
+.venv/ 
+*.pyc 
+ 
+# Arquivos do Terraform 
+.terraform/ 
+terraform.tfstate 
+terraform.tfstate.backup 
+

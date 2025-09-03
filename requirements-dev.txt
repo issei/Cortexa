@@ -1,0 +1,12 @@
+# Dependências para o ambiente de desenvolvimento e teste do projeto Cortexa
+
+# Framework principal para a escrita e execução de testes unitários.
+pytest
+
+# Plugin para pytest que facilita o mocking de objetos e funções,
+# essencial para isolar os testes de dependências externas.
+pytest-mock
+
+# O SDK da AWS para Python, necessário nos testes para mockar
+# as chamadas ao cliente Lambda (boto3.client('lambda')).
+boto3
