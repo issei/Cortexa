@@ -6,13 +6,13 @@ from unittest.mock import MagicMock, patch
 from urllib3.exceptions import RequestError, TimeoutError, MaxRetryError
 
 # Adiciona o diretório src ao sys.path para permitir importações locais
-import sys
+import logging
 from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parents[1] / 'src' / 'openai_embedding_proxy'))
+
 
 # Importa o handler e funções auxiliares
-from main import lambda_handler, _initialize
-import main as main_module
+from src.openai_embedding_proxy.main import lambda_handler, _initialize
+import src.openai_embedding_proxy.main as main_module
 
 # --- Fixtures ---
 
@@ -85,7 +85,7 @@ def test_initialize_idempotent(mock_env, mocker):
 
 def test_proxy_success_path(mocker, mock_env, mock_http_success, valid_event):
     """Testa o caminho feliz do proxy."""
-    mocker.patch('main.urllib3.PoolManager', return_value=mock_http_success)
+    mocker.patch('urllib3.PoolManager', return_value=mock_http_success)
     
     response = lambda_handler(valid_event, None)
     
@@ -112,7 +112,7 @@ def test_proxy_success_path(mocker, mock_env, mock_http_success, valid_event):
 ])
 def test_proxy_invalid_input(mocker, mock_env, test_input, expected_error):
     """Testa validação de input."""
-    mocker.patch('main.urllib3.PoolManager', return_value=MagicMock())
+    mocker.patch('urllib3.PoolManager', return_value=MagicMock())
     
     response = lambda_handler({"body": json.dumps(test_input)}, None)
     
@@ -134,7 +134,7 @@ def test_proxy_api_errors(mocker, mock_env, valid_event, status_code, error_mess
         status=status_code,
         data=json.dumps(error_message).encode('utf-8')
     )
-    mocker.patch('main.urllib3.PoolManager', return_value=mock_http)
+    mocker.patch('urllib3.PoolManager', return_value=mock_http)
     
     response = lambda_handler(valid_event, None)
     
@@ -144,8 +144,8 @@ def test_proxy_api_errors(mocker, mock_env, valid_event, status_code, error_mess
 # --- Testes de Erros de Rede ---
 
 @pytest.mark.parametrize("exception,expected_message", [
-    (TimeoutError("Connection timeout"), "timeout"),
-    (RequestError("Connection error"), "comunicação"),
+    (TimeoutError(None, "https://api.openai.com/v1/embeddings", "Connection timeout"), "timeout"),
+    (RequestError(None, "https://api.openai.com/v1/embeddings", "Connection error"), "comunicação"),
     (MaxRetryError(None, "api.openai.com", "Max retries exceeded"), "retries"),
     (Exception("Unexpected error"), "inesperado"),
 ])
@@ -153,7 +153,7 @@ def test_proxy_network_errors(mocker, mock_env, valid_event, exception, expected
     """Testa tratamento de diferentes tipos de erros de rede."""
     mock_http = MagicMock()
     mock_http.request.side_effect = exception
-    mocker.patch('main.urllib3.PoolManager', return_value=mock_http)
+    mocker.patch('urllib3.PoolManager', return_value=mock_http)
     
     response = lambda_handler(valid_event, None)
     
@@ -166,7 +166,7 @@ def test_proxy_network_errors(mocker, mock_env, valid_event, exception, expected
 
 def test_proxy_caching(mocker, mock_env, valid_event):
     """Verifica se o PoolManager é reutilizado entre chamadas."""
-    mock_pool = mocker.patch('main.urllib3.PoolManager', return_value=MagicMock())
+    mock_pool = mocker.patch('urllib3.PoolManager', return_value=MagicMock())
     
     # Primeira chamada
     lambda_handler(valid_event, None)
@@ -187,7 +187,7 @@ def test_proxy_caching(mocker, mock_env, valid_event):
 def test_proxy_input_validation(mocker, mock_env, input_text, model, expected_status):
     """Testa validação de diferentes inputs."""
     mock_http = MagicMock()
-    mocker.patch('main.urllib3.PoolManager', return_value=mock_http)
+    mocker.patch('urllib3.PoolManager', return_value=mock_http)
     
     event = {
         "body": json.dumps({
@@ -208,7 +208,7 @@ def test_proxy_logging(mocker, mock_env, valid_event, caplog):
         status=200,
         data=b'{"data": [{"embedding": [0.1]}]}'
     )
-    mocker.patch('main.urllib3.PoolManager', return_value=mock_http)
+    mocker.patch('urllib3.PoolManager', return_value=mock_http)
     
     with caplog.at_level(logging.INFO):
         lambda_handler(valid_event, None)

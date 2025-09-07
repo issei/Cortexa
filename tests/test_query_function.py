@@ -2,14 +2,10 @@ import json
 import os
 import pytest
 import psycopg2
+import logging
 from unittest.mock import MagicMock, patch, ANY
 
-# Adiciona o diretório src ao sys.path
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parents[1] / 'src' / 'query_function'))
-
-from main import lambda_handler, _initialize, _get_db_connection, get_embedding
+from src.query_function.main import lambda_handler, _initialize, _get_db_connection, get_embedding
 
 # --- Fixtures ---
 
@@ -18,7 +14,8 @@ def mock_env(monkeypatch):
     """Configura variáveis de ambiente para teste."""
     env_vars = {
         "NEON_DB_CONNECTION_STRING": "postgresql://fake:fake@fake.neon.tech/cortexa",
-        "OPENAI_PROXY_LAMBDA_ARN": "arn:aws:lambda:sa-east-1:497568177086:function:openai-proxy"
+        "OPENAI_PROXY_LAMBDA_ARN": "arn:aws:lambda:sa-east-1:497568177086:function:openai-proxy",
+        "AWS_REGION": "us-east-1"
     }
     for key, value in env_vars.items():
         monkeypatch.setenv(key, value)
@@ -62,6 +59,7 @@ def mock_dependencies(mocker, mock_env, mock_lambda_response, mock_db_results):
     # Mock do DB
     mock_cursor = MagicMock()
     mock_cursor.fetchall.return_value = mock_db_results
+    mock_cursor.mogrify.return_value = b"mocked SQL"  # Add this line
     mock_conn = MagicMock()
     mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
     mocker.patch('main.psycopg2.connect', return_value=mock_conn)
