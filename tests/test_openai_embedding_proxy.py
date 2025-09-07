@@ -1,136 +1,218 @@
 import json
 import os
 import pytest
-from unittest.mock import MagicMock
+import urllib3
+from unittest.mock import MagicMock, patch
+from urllib3.exceptions import RequestError, TimeoutError, MaxRetryError
 
 # Adiciona o diretório src ao sys.path para permitir importações locais
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1] / 'src' / 'openai_embedding_proxy'))
 
-# Importa o handler principal da função Lambda
-from main import lambda_handler
-import main as main_module # Para acessar as variáveis globais
+# Importa o handler e funções auxiliares
+from main import lambda_handler, _initialize
+import main as main_module
+
+# --- Fixtures ---
 
 @pytest.fixture(autouse=True)
 def reset_globals():
-    """Fixture para resetar o estado global do módulo 'main' antes de cada teste."""
+    """Reset do estado global do módulo antes de cada teste."""
     main_module.API_KEY = None
     main_module.HTTP = None
+    main_module.OPENAI_URL = "https://api.openai.com/v1/embeddings"
 
-# --- Testes para a Função Lambda: openai_embedding_proxy ---
+@pytest.fixture
+def mock_env(monkeypatch):
+    """Configura variáveis de ambiente para teste."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-12345")
+    return {"OPENAI_API_KEY": "test-key-12345"}
 
-def test_proxy_success_path(mocker):
-    """
-    Testa o caminho feliz (happy path) da função de proxy.
-    Verifica se a função lê a chave de API, faz a requisição para a OpenAI
-    e retorna a resposta corretamente.
-    """
-    # Mock das variáveis de ambiente
-    mocker.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key-12345"})
-
-    # Mock do urllib3.PoolManager
+@pytest.fixture
+def mock_http_success():
+    """Mock do PoolManager para respostas de sucesso."""
+    mock_response = MagicMock()
+    mock_response.status = 200
+    mock_response.data = json.dumps({
+        "data": [{
+            "embedding": [0.1] * 1536,
+            "index": 0,
+            "object": "embedding"
+        }]
+    }).encode('utf-8')
+    
     mock_pool = MagicMock()
-    mock_http = MagicMock()
-    mock_http.request.return_value = MagicMock(
-        status=200,
-        data=json.dumps({"data": [{"embedding": [0.1, 0.2, 0.3]}]}).encode('utf-8')
-    )
-    mock_pool.return_value = mock_http
-    mocker.patch('main.urllib3.PoolManager', mock_pool)
+    mock_pool.request.return_value = mock_response
+    return mock_pool
 
-    # Payload de evento de entrada para a Lambda
-    event = {
+@pytest.fixture
+def valid_event():
+    """Evento válido para testes."""
+    return {
         "body": json.dumps({
-            "input": "test input",
+            "input": "Texto para embeddings",
             "model": "text-embedding-3-small"
         })
     }
 
-    # Execução da função
-    response = lambda_handler(event, None)
+# --- Testes de Inicialização ---
 
-    # Asserts
+def test_initialize_success(mock_env):
+    """Testa inicialização bem-sucedida."""
+    assert _initialize() is True
+    assert main_module.API_KEY == "test-key-12345"
+    assert isinstance(main_module.HTTP, MagicMock)
+
+def test_initialize_missing_key(monkeypatch):
+    """Testa inicialização sem a chave API configurada."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert _initialize() is False
+    assert main_module.API_KEY is None
+
+def test_initialize_idempotent(mock_env, mocker):
+    """Testa que inicialização múltipla não recria recursos."""
+    mock_pool = mocker.patch('urllib3.PoolManager')
+    
+    assert _initialize() is True
+    first_http = main_module.HTTP
+    
+    assert _initialize() is True
+    assert main_module.HTTP is first_http
+    assert mock_pool.call_count == 1
+
+# --- Testes do Handler Principal ---
+
+def test_proxy_success_path(mocker, mock_env, mock_http_success, valid_event):
+    """Testa o caminho feliz do proxy."""
+    mocker.patch('main.urllib3.PoolManager', return_value=mock_http_success)
+    
+    response = lambda_handler(valid_event, None)
+    
     assert response["statusCode"] == 200
-    assert json.loads(response["body"]) == {"data": [{"embedding": [0.1, 0.2, 0.3]}]}
-
-    # Verifica se a requisição foi feita com os parâmetros corretos
-    mock_http.request.assert_called_once_with(
+    response_data = json.loads(response["body"])
+    assert "data" in response_data
+    assert len(response_data["data"][0]["embedding"]) == 1536
+    
+    mock_http_success.request.assert_called_once_with(
         "POST",
-        "https://api.openai.com/v1/embeddings",
-        body=event["body"],
+        main_module.OPENAI_URL,
+        body=valid_event["body"],
         headers={
             "Content-Type": "application/json",
-            "Authorization": "Bearer test-key-12345",
+            "Authorization": f"Bearer {mock_env['OPENAI_API_KEY']}",
         },
         timeout=25
     )
 
-
-def test_proxy_missing_api_key(mocker):
-    """
-    Testa o comportamento da função quando a variável de ambiente OPENAI_API_KEY não está definida.
-    A função deve retornar um erro 500.
-    """
-    # Garante que a variável de ambiente não está definida
-    mocker.patch.dict(os.environ, clear=True)
-
-    # Payload de evento (não deve ser processado)
-    event = {"body": "{}"}
-
-    # Execução e assert
-    response = lambda_handler(event, None)
-    assert response["statusCode"] == 500
-    body = json.loads(response["body"])
-    assert "error" in body
-    assert "OPENAI_API_KEY" in body["error"]
+@pytest.mark.parametrize("test_input,expected_error", [
+    ({"wrong_key": "test"}, "Corpo da requisição inválido"),
+    (None, "Corpo da requisição inválido"),
+    ({}, "Corpo da requisição inválido"),
+])
+def test_proxy_invalid_input(mocker, mock_env, test_input, expected_error):
+    """Testa validação de input."""
+    mocker.patch('main.urllib3.PoolManager', return_value=MagicMock())
+    
+    response = lambda_handler({"body": json.dumps(test_input)}, None)
+    
+    assert response["statusCode"] == 400
+    assert expected_error in json.loads(response["body"])["error"]
 
 
-def test_proxy_openai_api_error(mocker):
-    """
-    Testa o comportamento da função quando a API da OpenAI retorna um erro (ex: 401 Unauthorized).
-    A função deve propagar o status de erro e a resposta.
-    """
-    mocker.patch.dict(os.environ, {"OPENAI_API_KEY": "invalid-key"})
+# --- Testes de Erros da API ---
 
-    # Mock do urllib3 para simular um erro da API
-    mock_pool = MagicMock()
+@pytest.mark.parametrize("status_code,error_message", [
+    (401, {"error": {"message": "Invalid API key"}}),
+    (429, {"error": {"message": "Rate limit exceeded"}}),
+    (500, {"error": {"message": "Internal server error"}}),
+])
+def test_proxy_api_errors(mocker, mock_env, valid_event, status_code, error_message):
+    """Testa propagação de erros da API OpenAI."""
     mock_http = MagicMock()
-    error_response_body = json.dumps({"error": {"message": "Incorrect API key"}}).encode('utf-8')
     mock_http.request.return_value = MagicMock(
-        status=401,
-        data=error_response_body
+        status=status_code,
+        data=json.dumps(error_message).encode('utf-8')
     )
-    mock_pool.return_value = mock_http
-    mocker.patch('main.urllib3.PoolManager', mock_pool)
+    mocker.patch('main.urllib3.PoolManager', return_value=mock_http)
+    
+    response = lambda_handler(valid_event, None)
+    
+    assert response["statusCode"] == status_code
+    assert json.loads(response["body"]) == error_message
 
-    event = {"body": json.dumps({"input": "test"})}
+# --- Testes de Erros de Rede ---
 
-    # Execução e assert
-    response = lambda_handler(event, None)
-    assert response["statusCode"] == 401
-    assert response["body"] == error_response_body.decode('utf-8')
-
-
-def test_proxy_network_error(mocker):
-    """
-    Testa o comportamento da função em caso de erro de rede (ex: timeout).
-    A função deve capturar a exceção e retornar um erro 500 genérico.
-    """
-    mocker.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
-
-    # Mock do urllib3 para levantar uma exceção
-    mock_pool = MagicMock()
+@pytest.mark.parametrize("exception,expected_message", [
+    (TimeoutError("Connection timeout"), "timeout"),
+    (RequestError("Connection error"), "comunicação"),
+    (MaxRetryError(None, "api.openai.com", "Max retries exceeded"), "retries"),
+    (Exception("Unexpected error"), "inesperado"),
+])
+def test_proxy_network_errors(mocker, mock_env, valid_event, exception, expected_message):
+    """Testa tratamento de diferentes tipos de erros de rede."""
     mock_http = MagicMock()
-    mock_http.request.side_effect = Exception("Network timeout")
-    mock_pool.return_value = mock_http
-    mocker.patch('main.urllib3.PoolManager', mock_pool)
-
-    event = {"body": json.dumps({"input": "test"})}
-
-    # Execução e assert
-    response = lambda_handler(event, None)
+    mock_http.request.side_effect = exception
+    mocker.patch('main.urllib3.PoolManager', return_value=mock_http)
+    
+    response = lambda_handler(valid_event, None)
+    
     assert response["statusCode"] == 500
-    body = json.loads(response["body"])
-    assert "error" in body
-    assert "Network timeout" in body["error"]
+    error_body = json.loads(response["body"])
+    assert "error" in error_body
+    assert expected_message.lower() in error_body["error"].lower()
+
+# --- Testes de Performance ---
+
+def test_proxy_caching(mocker, mock_env, valid_event):
+    """Verifica se o PoolManager é reutilizado entre chamadas."""
+    mock_pool = mocker.patch('main.urllib3.PoolManager', return_value=MagicMock())
+    
+    # Primeira chamada
+    lambda_handler(valid_event, None)
+    assert mock_pool.call_count == 1
+    
+    # Segunda chamada - não deve criar novo PoolManager
+    lambda_handler(valid_event, None)
+    assert mock_pool.call_count == 1
+
+# --- Testes de Validação de Input ---
+
+@pytest.mark.parametrize("input_text,model,expected_status", [
+    ("", "text-embedding-3-small", 400),  # Texto vazio
+    ("a" * 8192, "text-embedding-3-small", 400),  # Texto muito longo
+    ("texto válido", "modelo-inválido", 400),  # Modelo inválido
+    ("texto válido", "", 400),  # Modelo vazio
+])
+def test_proxy_input_validation(mocker, mock_env, input_text, model, expected_status):
+    """Testa validação de diferentes inputs."""
+    mock_http = MagicMock()
+    mocker.patch('main.urllib3.PoolManager', return_value=mock_http)
+    
+    event = {
+        "body": json.dumps({
+            "input": input_text,
+            "model": model
+        })
+    }
+    
+    response = lambda_handler(event, None)
+    assert response["statusCode"] == expected_status
+
+# --- Testes de Logging ---
+
+def test_proxy_logging(mocker, mock_env, valid_event, caplog):
+    """Verifica se os logs apropriados são gerados."""
+    mock_http = MagicMock()
+    mock_http.request.return_value = MagicMock(
+        status=200,
+        data=b'{"data": [{"embedding": [0.1]}]}'
+    )
+    mocker.patch('main.urllib3.PoolManager', return_value=mock_http)
+    
+    with caplog.at_level(logging.INFO):
+        lambda_handler(valid_event, None)
+    
+    # Verifica logs esperados
+    assert any("Recebida requisição" in record.message for record in caplog.records)
+    assert any("Resposta da OpenAI recebida" in record.message for record in caplog.records)

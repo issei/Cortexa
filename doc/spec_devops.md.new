@@ -2,26 +2,48 @@
 
 ## Objetivo
 
-Este documento especifica a estratégia de CI/CD e Infraestrutura como Código (IaC) para o projeto Cortexa. O objetivo é estabelecer um pipeline seguro e automatizado para o deploy das funções Lambda na AWS, utilizando GitHub Actions e Terraform, com foco em um ambiente de produção estável e confiável.
+Este documento especifica a estratégia completa de CI/CD e Infraestrutura como Código (IaC) para o projeto Cortexa. O objetivo é estabelecer um pipeline seguro, automatizado e resiliente para o deploy das funções Lambda na AWS, utilizando GitHub Actions e Terraform, com suporte a múltiplos ambientes e práticas modernas de DevOps.
 
 ## Visão Geral da Arquitetura DevOps
 
-### 1. Ambiente de Produção
-- **Características**:
-  - Ambiente único e controlado
-  - Deploy somente após revisão e testes completos
-  - Monitoramento em tempo real
-  - Backup automático antes de mudanças
-  - Rollback automatizado em caso de falhas
+### 1. Ambientes de Implantação
+- **Development (dev)**
+  - Ambiente para testes de integração contínuos
+  - Deploys automáticos a partir da branch `develop`
+  - Limites de custo rigorosos e cleanup automático
+  
+- **Staging (stg)**
+  - Ambiente espelho da produção
+  - Deploys automáticos após aprovação manual
+  - Usado para testes de aceitação e performance
+
+- **Production (prod)**
+  - Ambiente de produção
+  - Deploy somente após aprovação múltipla
+  - Monitoramento em tempo real e alertas
 
 ### 2. Estrutura do Estado Terraform
 
 ```hcl
 terraform/
-├── main.tf           # Definição principal dos recursos
-├── variables.tf      # Variáveis configuráveis
-├── outputs.tf        # Outputs importantes
-└── backend.tf        # Configuração do backend S3
+├── environments/
+│   ├── dev/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── backend.tf
+│   ├── staging/
+│   │   └── ...
+│   └── prod/
+│       └── ...
+├── modules/
+│   ├── lambda/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   ├── monitoring/
+│   └── networking/
+└── global/
+    └── remote_state.tf
 ```
 
 ## Pipelines de CI/CD
