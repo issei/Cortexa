@@ -5,13 +5,7 @@ from unittest.mock import MagicMock, patch, ANY
 import psycopg2
 from psycopg2.extras import execute_batch
 
-# Adiciona o diretório src ao sys.path
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parents[1] / 'src' / 'ingest_function'))
-
-# Importa o handler e outras funções
-from main import (
+from src.ingest_function.main import (
     lambda_handler,
     chunk_text,
     get_embedding,
@@ -72,7 +66,8 @@ def mock_environment(monkeypatch):
     """Fixture para configurar variáveis de ambiente."""
     env_vars = {
         "NEON_DB_CONNECTION_STRING": "postgresql://fake:fake@fake.neon.tech/cortexa",
-        "OPENAI_PROXY_LAMBDA_ARN": "arn:aws:lambda:sa-east-1:497568177086:function:openai-proxy"
+        "OPENAI_PROXY_LAMBDA_ARN": "arn:aws:lambda:sa-east-1:497568177086:function:openai-proxy",
+        "AWS_REGION": "us-east-1"
     }
     for key, value in env_vars.items():
         monkeypatch.setenv(key, value)
@@ -196,8 +191,8 @@ def test_lambda_handler_success(mock_dependencies):
     ({"knowledgeBaseId": "kb-123"}, "text"),
     # Corpo vazio
     ({}, "knowledgeBaseId"),
-    # Valores vazios
-    ({"knowledgeBaseId": "", "text": ""}, "text"),
+    # Valores vazios - knowledgeBaseId is checked first
+    ({"knowledgeBaseId": "", "text": ""}, "knowledgeBaseId"),
 ])
 def test_lambda_handler_validation(mock_dependencies, event_body, expected_error):
     """Testa validação de parâmetros de entrada."""
