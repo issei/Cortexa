@@ -17,14 +17,6 @@ def mock_dependencies(mocker):
     """Fixture para mockar as dependências externas (boto3, psycopg2)."""
     # Mock do boto3
     mock_lambda_client = MagicMock()
-    # Simula uma resposta bem-sucedida do proxy
-    proxy_response_payload = json.dumps({
-        "statusCode": 200,
-        "body": json.dumps({"embedding": [0.2] * 1536})
-    })
-    mock_lambda_client.invoke.return_value = {
-        'Payload': MagicMock(read=lambda: proxy_response_payload)
-    }
     mocker.patch('main.boto3.client', return_value=mock_lambda_client)
 
     # Mock do psycopg2
@@ -35,7 +27,8 @@ def mock_dependencies(mocker):
         ("chunk de texto relevante 1", 0.95, {"page": 1}),
         ("chunk de texto relevante 2", 0.92, None)
     ]
-    mock_conn.cursor.return_value = mock_cursor
+    # O cursor é usado em um bloco 'with', então precisamos mockar o context manager
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
     mocker.patch('main.psycopg2.connect', return_value=mock_conn)
 
     # Mock das variáveis de ambiente
@@ -51,11 +44,18 @@ def test_query_success_path(mock_dependencies):
     Testa o caminho feliz da função de consulta.
     """
     mock_lambda_client, mock_cursor = mock_dependencies
+    proxy_response_payload = json.dumps({
+        "statusCode": 200,
+        "body": json.dumps({"data": [{"embedding": [0.2] * 1536}]})
+    }).encode('utf-8')
+    mock_lambda_client.invoke.return_value = {
+        'Payload': MagicMock(read=lambda: proxy_response_payload)
+    }
 
     event = {
         "body": json.dumps({
             "knowledgeBaseId": "kb-123",
-            "query": "qual é a pergunta de teste?",
+            "text": "qual é a pergunta de teste?",
             "top_k": 5
         })
     }
@@ -75,43 +75,50 @@ def test_query_success_path(mock_dependencies):
     # Verifica se a consulta ao DB foi feita
     mock_cursor.execute.assert_called_once()
     # Verifica se o `top_k` foi usado na query SQL
-    assert "LIMIT 5" in mock_cursor.execute.call_args[0][0]
+    assert mock_cursor.execute.call_args.args[1][2] == 5
 
 
 def test_query_default_top_k(mock_dependencies):
     """
     Testa se o valor padrão de `top_k` é usado quando não é fornecido.
     """
-    _, mock_cursor = mock_dependencies
+    mock_lambda_client, mock_cursor = mock_dependencies
+    proxy_response_payload = json.dumps({
+        "statusCode": 200,
+        "body": json.dumps({"data": [{"embedding": [0.2] * 1536}]})
+    }).encode('utf-8')
+    mock_lambda_client.invoke.return_value = {
+        'Payload': MagicMock(read=lambda: proxy_response_payload)
+    }
 
     event = {
         "body": json.dumps({
             "knowledgeBaseId": "kb-123",
-            "query": "teste sem top_k"
+            "text": "teste sem top_k"
         })
     }
 
     lambda_handler(event, None)
 
     # O padrão definido na função é 3
-    assert "LIMIT 3" in mock_cursor.execute.call_args[0][0]
+    assert mock_cursor.execute.call_args.args[1][2] == 3
 
 
 def test_query_missing_parameters():
     """
     Testa se a função retorna erro 400 se parâmetros essenciais estiverem faltando.
     """
-    # Caso 1: Falta 'query'
-    event_no_query = {
+    # Caso 1: Falta 'text'
+    event_no_text = {
         "body": json.dumps({"knowledgeBaseId": "kb-123"})
     }
-    response_no_query = lambda_handler(event_no_query, None)
-    assert response_no_query["statusCode"] == 400
-    assert "query" in json.loads(response_no_query["body"])["error"]
+    response_no_text = lambda_handler(event_no_text, None)
+    assert response_no_text["statusCode"] == 400
+    assert "text" in json.loads(response_no_text["body"])["error"]
 
     # Caso 2: Falta 'knowledgeBaseId'
     event_no_kb = {
-        "body": json.dumps({"query": "uma pergunta"})
+        "body": json.dumps({"text": "uma pergunta"})
     }
     response_no_kb = lambda_handler(event_no_kb, None)
     assert response_no_kb["statusCode"] == 400
@@ -123,19 +130,18 @@ def test_query_proxy_invocation_error(mock_dependencies):
     Testa o tratamento de erro se a invocação da Lambda de proxy falhar.
     """
     mock_lambda_client, mock_cursor = mock_dependencies
-    # Simula um erro na invocação da Lambda
     mock_lambda_client.invoke.side_effect = Exception("Proxy invocation failed")
 
     event = {
         "body": json.dumps({
             "knowledgeBaseId": "kb-123",
-            "query": "esta query vai falhar"
+            "text": "esta query vai falhar"
         })
     }
 
     response = lambda_handler(event, None)
 
     assert response["statusCode"] == 500
-    assert "Failed to get embedding" in json.loads(response["body"])["error"]
+    assert "Proxy invocation failed" in json.loads(response["body"])["error"]
     # Garante que não tentamos consultar o DB se o embedding falhou
     mock_cursor.execute.assert_not_called()

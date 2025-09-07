@@ -49,11 +49,12 @@ def chunk_text(text, chunk_size=512, chunk_overlap=50):
     start = 0
     while start < len(text):
         end = start + chunk_size
-        chunks.append(text[start:end])
+        chunk = text[start:end]
+        chunks.append(chunk.strip())
         start += chunk_size - chunk_overlap
         if start >= len(text):
             break
-    return chunks
+    return [c for c in chunks if c]
 
 def get_embedding(text_chunk, lambda_client, proxy_arn):
     """Invoca a Lambda de proxy para obter o embedding."""
@@ -68,7 +69,7 @@ def get_embedding(text_chunk, lambda_client, proxy_arn):
         InvocationType='RequestResponse',
         Payload=json.dumps(payload)
     )
-    response_payload = json.load(response['Payload'])
+    response_payload = json.loads(response['Payload'].read().decode('utf-8'))
 
     if response_payload.get("statusCode") != 200:
         logger.error(f"Proxy retornou erro: {response_payload.get('body')}")

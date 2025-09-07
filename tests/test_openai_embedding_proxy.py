@@ -1,5 +1,6 @@
 import json
 import os
+import pytest
 from unittest.mock import MagicMock
 
 # Adiciona o diretório src ao sys.path para permitir importações locais
@@ -9,6 +10,13 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / 'src' / 'openai_embedd
 
 # Importa o handler principal da função Lambda
 from main import lambda_handler
+import main as main_module # Para acessar as variáveis globais
+
+@pytest.fixture(autouse=True)
+def reset_globals():
+    """Fixture para resetar o estado global do módulo 'main' antes de cada teste."""
+    main_module.API_KEY = None
+    main_module.HTTP = None
 
 # --- Testes para a Função Lambda: openai_embedding_proxy ---
 
@@ -26,7 +34,7 @@ def test_proxy_success_path(mocker):
     mock_http = MagicMock()
     mock_http.request.return_value = MagicMock(
         status=200,
-        data=json.dumps({"embedding": [0.1, 0.2, 0.3]})
+        data=json.dumps({"data": [{"embedding": [0.1, 0.2, 0.3]}]}).encode('utf-8')
     )
     mock_pool.return_value = mock_http
     mocker.patch('main.urllib3.PoolManager', mock_pool)
@@ -44,7 +52,7 @@ def test_proxy_success_path(mocker):
 
     # Asserts
     assert response["statusCode"] == 200
-    assert json.loads(response["body"]) == {"embedding": [0.1, 0.2, 0.3]}
+    assert json.loads(response["body"]) == {"data": [{"embedding": [0.1, 0.2, 0.3]}]}
 
     # Verifica se a requisição foi feita com os parâmetros corretos
     mock_http.request.assert_called_once_with(
@@ -88,7 +96,7 @@ def test_proxy_openai_api_error(mocker):
     # Mock do urllib3 para simular um erro da API
     mock_pool = MagicMock()
     mock_http = MagicMock()
-    error_response_body = json.dumps({"error": {"message": "Incorrect API key"}})
+    error_response_body = json.dumps({"error": {"message": "Incorrect API key"}}).encode('utf-8')
     mock_http.request.return_value = MagicMock(
         status=401,
         data=error_response_body
@@ -101,7 +109,7 @@ def test_proxy_openai_api_error(mocker):
     # Execução e assert
     response = lambda_handler(event, None)
     assert response["statusCode"] == 401
-    assert response["body"] == error_response_body
+    assert response["body"] == error_response_body.decode('utf-8')
 
 
 def test_proxy_network_error(mocker):

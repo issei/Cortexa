@@ -52,7 +52,7 @@ def get_embedding(text_query, lambda_client, proxy_arn):
         InvocationType='RequestResponse',
         Payload=json.dumps(payload)
     )
-    response_payload = json.load(response['Payload'])
+    response_payload = json.loads(response['Payload'].read().decode('utf-8'))
 
     if response_payload.get("statusCode") != 200:
         logger.error(f"Proxy retornou erro: {response_payload.get('body')}")
@@ -72,13 +72,13 @@ def lambda_handler(event, context):
     try:
         body = json.loads(event.get("body", "{}"))
         knowledge_base_id = body.get("knowledgeBaseId")
-        query_text = body.get("query")
+        query_text = body.get("text")
         top_k = int(body.get("top_k", 3))
 
         if not knowledge_base_id:
             return {"statusCode": 400, "body": json.dumps({"error": "O campo 'knowledgeBaseId' é obrigatório."})}
         if not query_text:
-            return {"statusCode": 400, "body": json.dumps({"error": "O campo 'query' é obrigatório."})}
+            return {"statusCode": 400, "body": json.dumps({"error": "O campo 'text' é obrigatório."})}
     except (json.JSONDecodeError, AttributeError, ValueError):
         return {"statusCode": 400, "body": json.dumps({"error": "Corpo da requisição inválido."})}
 
