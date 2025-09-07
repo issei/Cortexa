@@ -10,3 +10,8 @@ pytest-mock
 # O SDK da AWS para Python, necessário nos testes para mockar
 # as chamadas ao cliente Lambda (boto3.client('lambda')).
 boto3
+
+# Adaptador PostgreSQL para Python, usado para conectar ao Neon DB.
+# Mesmo que a conexão seja mockada nos testes, o pacote é necessário
+# para que o `import psycopg2` no código da aplicação funcione.
+psycopg2-binary
